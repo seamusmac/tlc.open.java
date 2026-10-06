@@ -50,20 +50,16 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <git-commit-id-plugin-version>2.1.7</git-commit-id-plugin-version>
         <properties-plugin>1.0-alpha-2</properties-plugin>
-        <groovy-all-version>2.4.3</groovy-all-version>
-        <!--groovy-eclipse-batch needs to match groovy-all-->
-        <groovy-eclipse-batch-version>2.4.3-01</groovy-eclipse-batch-version>
-        <groovy-eclipse-compiler-version>2.9.2-01</groovy-eclipse-compiler-version>
         <buildnumber-maven-version>1.2</buildnumber-maven-version>
         <exec-maven-version>1.2.1</exec-maven-version>
         <findbugs-maven-version>2.5.3</findbugs-maven-version>
-        <jdk-version>1.8</jdk-version>
+        <jdk-version>1.9</jdk-version>
         <latex-maven-version>1.1</latex-maven-version>
         <maven-antrun-version>1.7</maven-antrun-version>
         <maven-assembly-version>2.5.2</maven-assembly-version>
         <maven-bundle-version>2.4.0</maven-bundle-version>
         <maven-clean-version>2.5</maven-clean-version>
-        <maven-compiler-version>3.1</maven-compiler-version>
+        <maven-compiler-version>3.14.0</maven-compiler-version>
         <maven-dependency-version>2.8</maven-dependency-version>
         <maven-deploy-version>2.8.1</maven-deploy-version>
         <maven-enforcer-version>1.3</maven-enforcer-version>
@@ -461,45 +457,6 @@
                     <url>https://oss.sonatype.org/content/repositories/snapshots</url>
                 </snapshotRepository>
             </distributionManagement>
-        </profile>
-        <profile>
-            <id>use-groovy-compiler</id>
-            <activation>
-                <file>
-                    <exists>src/main/groovy</exists>
-                </file>
-            </activation>
-            <dependencies>
-                <dependency>
-                    <groupId>org.codehaus.groovy</groupId>
-                    <artifactId>groovy-all</artifactId>
-                    <version>${groovy-all-version}</version>
-                </dependency>
-            </dependencies>
-            <build>
-                <plugins>
-                    <plugin>
-                        <artifactId>maven-compiler-plugin</artifactId>
-                        <configuration>
-                            <compilerId>groovy-eclipse-compiler</compilerId>
-                            <source>${jdk-version}</source>
-                            <target>${jdk-version}</target>
-                        </configuration>
-                        <dependencies>
-                            <dependency>
-                                <groupId>org.codehaus.groovy</groupId>
-                                <artifactId>groovy-eclipse-compiler</artifactId>
-                                <version>${groovy-eclipse-compiler-version}</version>
-                            </dependency>
-                            <dependency>
-                                <groupId>org.codehaus.groovy</groupId>
-                                <artifactId>groovy-eclipse-batch</artifactId>
-                                <version>${groovy-eclipse-batch-version}</version>
-                            </dependency>
-                        </dependencies>
-                    </plugin>
-                </plugins>
-            </build>
         </profile>
         <profile>
             <id>disable-java8-doclint</id>

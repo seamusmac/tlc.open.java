@@ -16,30 +16,42 @@
 
 package com.thelastcheck.commons.base.utils;
 
-import java.awt.Image;
+import java.awt.Rectangle;
+import java.awt.geom.AffineTransform;
+import java.awt.geom.Rectangle2D;
+import java.awt.image.AffineTransformOp;
+import java.awt.image.BufferedImage;
 import java.awt.image.RenderedImage;
-import java.awt.image.renderable.ParameterBlock;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteOrder;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
 
-import javax.media.jai.InterpolationNearest;
-import javax.media.jai.JAI;
-
-import com.sun.media.jai.codec.ImageCodec;
-import com.sun.media.jai.codec.ImageEncoder;
-import com.sun.media.jai.codec.TIFFDirectory;
-import com.sun.media.jai.codec.TIFFEncodeParam;
-import com.sun.media.jai.codec.TIFFField;
-import com.sun.media.jai.codecimpl.TIFFImageDecoder;
+import javax.imageio.IIOImage;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
+import javax.imageio.ImageTypeSpecifier;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.metadata.IIOMetadata;
+import javax.imageio.plugins.tiff.BaselineTIFFTagSet;
+import javax.imageio.plugins.tiff.TIFFDirectory;
+import javax.imageio.plugins.tiff.TIFFField;
+import javax.imageio.plugins.tiff.TIFFTag;
+import javax.imageio.stream.ImageInputStream;
+import javax.imageio.stream.ImageOutputStream;
 
 public class RenderedImageWrapper {
 
-	public static final int			TAG_YRESOLUTION					= TIFFImageDecoder.TIFF_Y_RESOLUTION;
-	public static final int			TAG_XRESOLUTION					= TIFFImageDecoder.TIFF_X_RESOLUTION;
-	public static final int			TAG_RESOLUTION_UNIT				= TIFFImageDecoder.TIFF_RESOLUTION_UNIT;
-	public static final int			TAG_PHOTOMETRIC_INTERPRETATION	= TIFFImageDecoder.TIFF_PHOTOMETRIC_INTERPRETATION;
+	public static final int			TAG_YRESOLUTION					= BaselineTIFFTagSet.TAG_Y_RESOLUTION;
+	public static final int			TAG_XRESOLUTION					= BaselineTIFFTagSet.TAG_X_RESOLUTION;
+	public static final int			TAG_RESOLUTION_UNIT				= BaselineTIFFTagSet.TAG_RESOLUTION_UNIT;
+	public static final int			TAG_PHOTOMETRIC_INTERPRETATION	= BaselineTIFFTagSet.TAG_PHOTOMETRIC_INTERPRETATION;
+
+	private static final String		TIFF_METADATA_FORMAT			= "javax_imageio_tiff_image_1.0";
 
 	private RenderedImage			image;
 	private TIFFDirectory			directory;
@@ -51,18 +63,48 @@ public class RenderedImageWrapper {
 	}
 
 	public RenderedImageWrapper(RenderedImage image) {
+		this(image, null);
+	}
+
+	/**
+	 * @param metadata
+	 *            the image metadata returned by the ImageIO reader; if it is TIFF metadata the TIFF fields are made
+	 *            available through {@link #tiffField(int)}.
+	 */
+	public RenderedImageWrapper(RenderedImage image, IIOMetadata metadata) {
 		this.image = image;
-		Object obj = image.getProperty("tiff_directory");
-		if (obj != Image.UndefinedProperty) {
+		if (metadata != null && TIFF_METADATA_FORMAT.equals(metadata.getNativeMetadataFormatName())) {
+			try {
+				directory = TIFFDirectory.createFromMetadata(metadata);
+			} catch (IOException e) {
+				throw new IllegalArgumentException("Unable to read TIFF metadata", e);
+			}
 			isTiff = true;
-			directory = (TIFFDirectory) obj;
-			TIFFField[] fields = directory.getFields();
-			for (int i = 0; i < fields.length; i++) {
-				TIFFField tiffField = fields[i];
-				fieldMap.put(tiffField.getTag(), tiffField);
+			for (TIFFField tiffField : directory.getTIFFFields()) {
+				fieldMap.put(tiffField.getTagNumber(), tiffField);
 			}
 		}
-		// TiffImage tImage = new TiffImage();
+	}
+
+	/**
+	 * Reads image data with ImageIO, keeping the TIFF metadata when the data is a TIFF image.
+	 */
+	public static RenderedImageWrapper read(byte[] data) throws IOException {
+		try (ImageInputStream iis = ImageIO.createImageInputStream(new ByteArrayInputStream(data))) {
+			Iterator<ImageReader> readers = ImageIO.getImageReaders(iis);
+			if (!readers.hasNext()) {
+				throw new IOException("Unable to find codec for image data");
+			}
+			ImageReader reader = readers.next();
+			try {
+				reader.setInput(iis, true, false);
+				BufferedImage image = reader.read(0);
+				IIOMetadata metadata = reader.getImageMetadata(0);
+				return new RenderedImageWrapper(image, metadata);
+			} finally {
+				reader.dispose();
+			}
+		}
 	}
 
 	public TIFFField tiffField(int tag) {
@@ -102,14 +144,14 @@ public class RenderedImageWrapper {
 
 	private long getFieldValue(TIFFField field) {
 		long value;
-		if (field.getType() == TIFFField.TIFF_DOUBLE) {
+		if (field.getType() == TIFFTag.TIFF_DOUBLE) {
 			value = (int) field.getAsDouble(0);
-		} else if (field.getType() == TIFFField.TIFF_FLOAT) {
+		} else if (field.getType() == TIFFTag.TIFF_FLOAT) {
 			value = (int) field.getAsFloat(0);
-		} else if (field.getType() == TIFFField.TIFF_RATIONAL) {
+		} else if (field.getType() == TIFFTag.TIFF_RATIONAL) {
 			long[] values = field.getAsRational(0);
 			value = (int) ((double) values[0] / (double) values[1]);
-		} else if (field.getType() == TIFFField.TIFF_LONG) {
+		} else if (field.getType() == TIFFTag.TIFF_LONG) {
 			value = (int) field.getAsLong(0);
 		} else {
 			value = field.getAsInt(0);
@@ -117,44 +159,62 @@ public class RenderedImageWrapper {
 		return value;
 	}
 
+	/**
+	 * Encodes the image as a little-endian, single strip, CCITT Group 4 TIFF. The image must be bi-level.
+	 */
 	public byte[] convertToTiff() throws IOException {
 		RenderedImage image = this.image;
-		TIFFEncodeParam param = new TIFFEncodeParam();
-		param.setCompression(TIFFEncodeParam.COMPRESSION_GROUP4);
-		param.setLittleEndian(true);
-		param.setTileSize(image.getWidth(), image.getHeight());
+		BaselineTIFFTagSet tagSet = BaselineTIFFTagSet.getInstance();
 
 		TIFFField xresField = tiffField(RenderedImageWrapper.TAG_XRESOLUTION);
 		TIFFField yresField = tiffField(RenderedImageWrapper.TAG_YRESOLUTION);
 		TIFFField photoMetricField = tiffField(RenderedImageWrapper.TAG_PHOTOMETRIC_INTERPRETATION);
 
-		char[] resUnitValue = new char[1];
-		resUnitValue[0] = 2;
-		TIFFField resUnitField = new TIFFField(TAG_RESOLUTION_UNIT, TIFFField.TIFF_SHORT, 1, resUnitValue);
+		TIFFField resUnitField = new TIFFField(tagSet.getTag(TAG_RESOLUTION_UNIT), TIFFTag.TIFF_SHORT, 1,
+				new char[] { BaselineTIFFTagSet.RESOLUTION_UNIT_INCH });
 
 		if (xresField == null) {
-			long[][] rational = new long[][] { { (long) 240, (long) 1 }, { (long) 0, (long) 0 } };
-			xresField = new TIFFField(TAG_XRESOLUTION, TIFFField.TIFF_RATIONAL, 1, rational);
+			long[][] rational = new long[][] { { 240, 1 } };
+			xresField = new TIFFField(tagSet.getTag(TAG_XRESOLUTION), TIFFTag.TIFF_RATIONAL, 1, rational);
 		}
 		if (yresField == null) {
-			long[][] rational = new long[][] { { (long) 240, (long) 1 }, { (long) 0, (long) 0 } };
-			yresField = new TIFFField(TAG_YRESOLUTION, TIFFField.TIFF_RATIONAL, 1, rational);
+			long[][] rational = new long[][] { { 240, 1 } };
+			yresField = new TIFFField(tagSet.getTag(TAG_YRESOLUTION), TIFFTag.TIFF_RATIONAL, 1, rational);
 		}
 		if (photoMetricField == null) {
-			char[] value = new char[1];
-			value[0] = 0;
-			photoMetricField = new TIFFField(TAG_PHOTOMETRIC_INTERPRETATION, TIFFField.TIFF_SHORT, 1, value);
+			photoMetricField = new TIFFField(tagSet.getTag(TAG_PHOTOMETRIC_INTERPRETATION), TIFFTag.TIFF_SHORT, 1,
+					new char[] { BaselineTIFFTagSet.PHOTOMETRIC_INTERPRETATION_WHITE_IS_ZERO });
 		}
-		TIFFField[] extraFields = { photoMetricField, xresField, yresField, resUnitField };
-		param.setExtraFields(extraFields);
+		// write the whole image as a single strip
+		TIFFField rowsPerStripField = new TIFFField(tagSet.getTag(BaselineTIFFTagSet.TAG_ROWS_PER_STRIP),
+				TIFFTag.TIFF_LONG, 1, new long[] { image.getHeight() });
 
-		int size = ((image.getWidth() * image.getHeight()) / 8) + 2048;
-		ByteArrayOutputStream stream = new ByteArrayOutputStream(size);
-		ImageEncoder enc = ImageCodec.createImageEncoder("tiff", stream, param);
-		enc.encode(image);
+		ImageWriter writer = ImageIO.getImageWritersByFormatName("tiff").next();
+		try {
+			ImageWriteParam param = writer.getDefaultWriteParam();
+			param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+			param.setCompressionType("CCITT T.6");
 
-		byte[] ba = stream.toByteArray();
-		return ba;
+			IIOMetadata defaultMetadata = writer.getDefaultImageMetadata(
+					ImageTypeSpecifier.createFromRenderedImage(image), param);
+			TIFFDirectory dir = TIFFDirectory.createFromMetadata(defaultMetadata);
+			dir.addTIFFField(photoMetricField);
+			dir.addTIFFField(xresField);
+			dir.addTIFFField(yresField);
+			dir.addTIFFField(resUnitField);
+			dir.addTIFFField(rowsPerStripField);
+
+			int size = ((image.getWidth() * image.getHeight()) / 8) + 2048;
+			ByteArrayOutputStream stream = new ByteArrayOutputStream(size);
+			try (ImageOutputStream ios = ImageIO.createImageOutputStream(stream)) {
+				ios.setByteOrder(ByteOrder.LITTLE_ENDIAN);
+				writer.setOutput(ios);
+				writer.write(null, new IIOImage(image, null, dir.getAsMetadata()), param);
+			}
+			return stream.toByteArray();
+		} finally {
+			writer.dispose();
+		}
 	}
 
 	public RenderedImage rotateImage(int degree) {
@@ -164,26 +224,20 @@ public class RenderedImageWrapper {
 	public static RenderedImage rotateImage(RenderedImage image, int degree) {
 
 		// Create the rotation angle and convert to radians.
-		float angle = (float) (degree * (Math.PI / 180.0F));
+		double angle = Math.toRadians(degree);
 
-		// Create a ParameterBlock and specify the source and parameters
-		ParameterBlock pb = new ParameterBlock();
+		double centerX = image.getWidth() / 2d;
+		double centerY = image.getHeight() / 2d;
+		AffineTransform rotate = AffineTransform.getRotateInstance(angle, centerX, centerY);
 
-		pb.addSource(image); // The source image
+		// shift the rotated image so its bounds start at the origin
+		Rectangle2D bounds = rotate.createTransformedShape(
+				new Rectangle(0, 0, image.getWidth(), image.getHeight())).getBounds2D();
+		AffineTransform transform = AffineTransform.getTranslateInstance(-bounds.getX(), -bounds.getY());
+		transform.concatenate(rotate);
 
-		float centerX = image.getWidth() / 2f;
-		float centerY = image.getHeight() / 2f;
-
-		pb.add(centerX); // The x origin
-		pb.add(centerY); // The y origin
-		pb.add(angle); // The rotation angle
-
-		pb.add(new InterpolationNearest()); // The interpolation
-
-		// Create the rotate operation
-		RenderedImage result = JAI.create("Rotate", pb, null);
-
-		return result;
+		AffineTransformOp op = new AffineTransformOp(transform, AffineTransformOp.TYPE_NEAREST_NEIGHBOR);
+		return op.filter(ImageUtils.convertToBufferedImage(image), null);
 	}
 
 }
